@@ -1,94 +1,155 @@
-import { createElement } from './domMethods';
-// Setting up dummy topics data
-let topicData = [
-  {
-    id: 1,
-    name: `Politics`
-  },
-  {
-    id: 2,
-    name: `Environment`
-  },
-  {
-    id: 3,
-    name: `Sports`
-  },
-  {
-    id: 4,
-    name: `Entertainment`
-  }
-];
+"use strict";
 
-let lastId = 4;
+let transactions = [];
+let myChart;
 
-// Empty topic container, render topics
-function renderTopics() {
-  const topicContainer = document.querySelector(`.topic-container`);
-  const topics = createTopics(topicData);
-
-  while (topicContainer.firstChild) {
-    topicContainer.removeChild(topicContainer.firstChild);
-  }
-
-  topicContainer.appendChild(topics);
-}
-
-// Return HTML for each topic provided
-function createTopics(currTopics) {
-  const fragment = document.createDocumentFragment();
-
-  currTopics.forEach(data => {
-    const topic = createTopic(data);
-    fragment.appendChild(topic);
+fetch(`/api/transaction`)
+  .then((response) => response.json())
+  .then((data) => {
+    // save db data on global variable
+    transactions = data;
+    populateTotal();
+    populateTable();
+    populateChart();
   });
 
-  return fragment;
-}
-
-// Return markup for a topic object
-function createTopic({ name, id }) {
-  return createElement(
-    `div`,
-    { class: `topic` },
-    createElement(
-      `button`,
-      { 'aria-label': `Close`, 'data-id': id, onClick: handleTopicDelete },
-      `×`
-    ),
-    createElement(`a`, { href: `topic.html?query=${name}` }, name)
+function populateTotal() {
+  // reduce transaction amounts to a single total value
+  const total = transactions.reduce(
+    (currTotal, t) => currTotal + parseInt(t.value),
+    0
   );
+
+  const totalEl = document.querySelector(`#total`);
+  totalEl.textContent = total;
 }
 
-// Deletes a topic on click
-function handleTopicDelete(event) {
-  const id = Number(event.target.getAttribute(`data-id`));
+function populateTable() {
+  const tbody = document.querySelector(`#tbody`);
+  tbody.innerHTML = ``;
 
-  topicData = topicData.filter(topic => topic.id !== id);
+  transactions.forEach((transaction) => {
+    // create and populate a table row
+    const tr = document.createElement(`tr`);
+    tr.innerHTML = `
+      <td>${transaction.name}</td>
+      <td>${transaction.value}</td>
+    `;
 
-  renderTopics();
+    tbody.appendChild(tr);
+  });
 }
 
-function handleTopicAdd(event) {
-  event.preventDefault();
+function populateChart() {
+  // copy array and reverse it
+  const reversed = transactions.slice().reverse();
+  let sum = 0;
 
-  const input = document.querySelector(`#add-topic`);
-  const value = input.value.trim();
+  // create date labels for chart
+  const labels = reversed.map((t) => {
+    const date = new Date(t.date);
+    return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
+  });
 
-  if (!value) {
-    return;
+  // create incremental values for chart
+  const data = reversed.map((t) => {
+    sum += parseInt(t.value);
+    return sum;
+  });
+
+  // remove old chart if it exists
+  if (myChart) {
+    myChart.destroy();
   }
 
-  topicData = [...topicData, { id: ++lastId, name: value }];
+  const ctx = document.getElementById(`my-chart`).getContext(`2d`);
 
-  input.value = ``;
-
-  renderTopics();
+  myChart = new Chart(ctx, {
+    type: `line`,
+    data: {
+      labels,
+      datasets: [
+        {
+          label: `Total Over Time`,
+          fill: true,
+          backgroundColor: `#6666ff`,
+          data,
+        },
+      ],
+    },
+  });
 }
 
-// Renders topics on page load
-renderTopics();
+function sendTransaction(isAdding) {
+  const nameEl = document.querySelector(`#t-name`);
+  const amountEl = document.querySelector(`#t-amount`);
+  const errorEl = document.querySelector(`form .error`);
 
-// Handle new topic submissions
-document
-  .querySelector(`#submit-topic`)
-  .addEventListener(`click`, handleTopicAdd);
+  // validate form
+  if (nameEl.value === `` || amountEl.value === ``) {
+    errorEl.textContent = `Missing Information`;
+    return;
+  } else {
+    errorEl.textContent = ``;
+  }
+
+  // create record
+  const transaction = {
+    name: nameEl.value,
+    value: amountEl.value,
+    date: new Date().toISOString(),
+  };
+
+  // if subtracting funds, convert amount to negative number
+  if (!isAdding) {
+    transaction.value *= -1;
+  }
+
+  // add to beginning of current array of data
+  transactions.unshift(transaction);
+
+  // re-run logic to populate ui with new record
+  populateChart();
+  populateTable();
+  populateTotal();
+
+  // also send to server
+  fetch(`/api/transaction`, {
+    method: `POST`,
+    body: JSON.stringify(transaction),
+    headers: {
+      Accept: `application/json, text/plain, */*`,
+      "Content-Type": `application/json`,
+    },
+  })
+    .then((response) => response.json())
+    .then((data) => {
+      if (data.errors) {
+        errorEl.textContent = `Missing Information`;
+      } else {
+        // clear form
+        nameEl.value = ``;
+        amountEl.value = ``;
+      }
+    })
+    .catch((err) => {
+      // fetch failed, so save in indexed db
+      saveRecord(transaction);
+
+      // clear form
+      nameEl.value = ``;
+      amountEl.value = ``;
+
+      console.error(err);
+    });
+}
+
+document.querySelector(`#add-btn`).addEventListener(`click`, (event) => {
+  event.preventDefault();
+  sendTransaction(true);
+});
+
+document.querySelector(`#sub-btn`).addEventListener(`click`, (event) => {
+  event.preventDefault();
+  sendTransaction(false);
+});
